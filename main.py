@@ -101,6 +101,29 @@ ZONAS_SANTIAGO = [
     "Estacion Central",
 ]
 
+ZONAS_COORDENADAS = {
+    "Santiago Centro": (-33.4429, -70.6540),
+    "Providencia": (-33.4289, -70.6080),
+    "Las Condes": (-33.3937, -70.5840),
+    "Vitacura": (-33.3999, -70.5731),
+    "Nunoa": (-33.4520, -70.6120),
+    "La Florida": (-33.4930, -70.5863),
+    "Maipu": (-33.4865, -70.7602),
+    "Pudahuel": (-33.4584, -70.7838),
+    "Quilicura": (-33.3752, -70.7715),
+    "Penalolen": (-33.4750, -70.5709),
+    "La Reina": (-33.4688, -70.5507),
+    "Macul": (-33.4804, -70.6224),
+    "San Miguel": (-33.5034, -70.7097),
+    "La Cisterna": (-33.5193, -70.6529),
+    "El Bosque": (-33.5431, -70.6675),
+    "Puente Alto": (-33.6142, -70.5755),
+    "San Bernardo": (-33.6002, -70.7243),
+    "Lo Barnechea": (-33.3559, -70.5250),
+    "Cerrillos": (-33.5028, -70.7425),
+    "Estacion Central": (-33.4578, -70.6676),
+}
+
 # Calles reales de Santiago para direcciones mas autenticas
 CALLES_SANTIAGO = [
     "Avenida Libertador Bernardo O Higgins",
@@ -126,8 +149,8 @@ CALLES_SANTIAGO = [
 ]
 
 
-def generar_direccion_santiago() -> str:
-    """Genera una direccion ficticia pero contextualizada en Santiago, Chile."""
+def generar_direccion_santiago() -> tuple[str, str]:
+    """Genera una direccion ficticia y su zona asociada en Santiago, Chile."""
     calle = random.choice(CALLES_SANTIAGO)
     numero = random.randint(100, 9999)
     piso_o_depto = ""
@@ -136,7 +159,16 @@ def generar_direccion_santiago() -> str:
         num = random.randint(1, 20)
         piso_o_depto = f", {tipo}. {num}"
     zona = random.choice(ZONAS_SANTIAGO)
-    return f"{calle} #{numero}{piso_o_depto}, {zona}, Santiago"
+    direccion = f"{calle} #{numero}{piso_o_depto}, {zona}, Santiago, Chile"
+    return direccion, zona
+
+
+def generar_coordenadas_por_zona(zona: str) -> tuple[float, float]:
+    """Genera coordenadas aleatorias dentro de la zona seleccionada."""
+    base = ZONAS_COORDENADAS.get(zona, (-33.45, -70.66))
+    lat = base[0] + random.uniform(-0.008, 0.008)
+    lon = base[1] + random.uniform(-0.008, 0.008)
+    return lat, lon
 
 
 # =============================================================================
@@ -214,13 +246,17 @@ def generar_ordenes_trabajo(tecnicos: list, n: int = 200) -> list:
     hoy = date.today()
 
     for i in range(1, n + 1):
+        direccion, zona = generar_direccion_santiago()
+        latitud, longitud = generar_coordenadas_por_zona(zona)
         orden = {
             # Formato "OT-XXXX" con padding de ceros a la izquierda
             "id": f"OT-{i:04d}",
             "tipo": random.choice(TIPOS_OT),
             "estado": "por_asignar",
             "tecnico_id": None,
-            "direccion_instalacion": generar_direccion_santiago(),
+            "direccion_instalacion": direccion,
+            "latitud": latitud,
+            "longitud": longitud,
             "fecha_programada": None,
             "hora_programada": None,
         }
@@ -230,9 +266,9 @@ def generar_ordenes_trabajo(tecnicos: list, n: int = 200) -> list:
 
 
 # Generamos los datos al arrancar la aplicacion (base de datos en memoria)
-DB_TECNICOS = generar_tecnicos(n=20)
+DB_TECNICOS = generar_tecnicos(n=4)
 DB_DISPONIBILIDADES = generar_disponibilidades(DB_TECNICOS, dias=14)
-DB_ORDENES = generar_ordenes_trabajo(DB_TECNICOS, n=50)
+DB_ORDENES = generar_ordenes_trabajo(DB_TECNICOS, n=10)
 
 
 # =============================================================================
