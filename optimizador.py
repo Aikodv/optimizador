@@ -1,6 +1,8 @@
 import requests
 import random
 import time
+import json
+import unicodedata
 from datetime import date
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
@@ -16,7 +18,7 @@ USAR_OSRM = True
 OSRM_TABLE_URL = "http://router.project-osrm.org/table/v1/driving"
 USAR_GEOCODING = True
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-USER_AGENT = "optimizador-rutas-chile/3.0"
+USER_AGENT = "optimizador-rutas-chile/3.1"
 
 # Geocerca Chile (Bounding Box)
 LAT_MIN, LAT_MAX = -56.5, -17.5
@@ -40,8 +42,42 @@ def minutos_desde_inicio(hora_str):
     except ValueError:
         return None
 
+def normalizar_texto(texto):
+    """Elimina tildes, convierte a minusculas y quita espacios extra para cruces exactos."""
+    if not texto:
+        return ""
+    texto = str(texto).strip().lower()
+    texto = ''.join((c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn'))
+    return texto
+
+def cargar_coordenadas_comunas():
+    """Carga el JSON local de comunas de Chile y retorna un diccionario de busqueda rapida."""
+    print("   [PROCESS] Cargando base de datos local de comunas de Chile...")
+    comunas_dict = {}
+    try:
+        with open("Latitud - Longitud Chile.json", "r", encoding="utf-8") as f:
+            datos = json.load(f)
+            
+        for item in datos:
+            nombre_comuna = normalizar_texto(item.get("Comuna", ""))
+            # Se manejan posibles variaciones en las llaves (Mayusculas/Minusculas)
+            lat = item.get("Latitud (Decimal)")
+            lon = item.get("Longitud (decimal)") or item.get("Longitud (Decimal)") 
+            
+            if nombre_comuna and lat is not None and lon is not None:
+                comunas_dict[nombre_comuna] = (float(lat), float(lon))
+                
+        print(f"   [OK] {len(comunas_dict)} comunas cargadas exitosamente.")
+        return comunas_dict
+    except FileNotFoundError:
+        print("   [ERROR] Archivo 'Latitud - Longitud Chile.json' no encontrado en el directorio raiz.")
+        return {}
+    except Exception as e:
+        print(f"   [ERROR] Fallo al procesar 'Latitud - Longitud Chile.json': {e}")
+        return {}
+
 def geocode_direccion(direccion):
-    """Convierte una direccion a coordenadas forzando que caigan dentro de Chile."""
+    """Convierte una direccion a coordenadas mediante Nominatim (USADO SOLO PARA OTs)."""
     try:
         params = {
             "q": direccion, 
@@ -70,7 +106,7 @@ def geocode_direccion(direccion):
     return None, None
 
 def asegurar_coordenadas_ordenes(ordenes):
-    """Verifica y geocodifica de manera segura respetando la geocerca."""
+    """Verifica y geocodifica de manera segura OTs respetando la geocerca."""
     for ot in ordenes:
         if ot.get("latitud") is not None and ot.get("longitud") is not None:
             lat, lon = ot["latitud"], ot["longitud"]
@@ -88,7 +124,7 @@ def asegurar_coordenadas_ordenes(ordenes):
                 if lat is not None and lon is not None:
                     ot["latitud"], ot["longitud"] = lat, lon
                     print(f"   [INFO] OT {ot.get('id')} geocodificada en Chile: {lat},{lon}")
-                    time.sleep(1)
+                    time.sleep(1.5) # Respetar limites de Nominatim para las OTs
 
 def obtener_matrices_osrm(coords_nodos):
     """Obtiene la matriz completa de distancias y tiempos para todos los nodos."""
@@ -140,13 +176,6 @@ def obtener_datos_operativos():
         print(f"      - Internos: {internos} | Externos: {externos}")
         print(f"   -> {len(ordenes_pendientes)} OTs pendientes de asignacion")
         
-        if tecnicos_hoy:
-            print(f"\n   Tecnicos disponibles HOY:")
-            for t in tecnicos_hoy[:5]:
-                print(f"      - {t['nombre']} {t['apellidos']} (tipo: {t.get('tipo')}, zona: {t.get('zona')})")
-            if len(tecnicos_hoy) > 5:
-                print(f"      ... y {len(tecnicos_hoy) - 5} mas")
-        
         return tecnicos_hoy, ordenes_pendientes
     except Exception as e:
         print(f"   [ERROR FATAL] Conexion a API: {e}")
@@ -162,25 +191,27 @@ def preparar_modelo_datos(tecnicos, ordenes):
     V = data['num_vehicles']
 
     coords_nodos = [] # Guardara (lon, lat) de todos los nodos (Tecnicos + OTs)
+    
+    # 1. Cargar comunas localmente
+    diccionario_comunas = cargar_coordenadas_comunas()
 
-    print(f"   [PROCESS] Geocodificando el punto de partida (zona) de {V} tecnicos...")
+    print(f"   [PROCESS] Localizando punto de partida de {V} tecnicos usando JSON local...")
     for t in tecnicos:
-        zona = t.get('zona', '')
+        zona_original = t.get('zona', '')
+        zona_normalizada = normalizar_texto(zona_original)
         lat, lon = None, None
-        if zona:
-            # Añadimos "Chile" para evitar que busque la comuna en otro pais
-            query = f"{zona}, Chile"
-            lat, lon = geocode_direccion(query)
-            
-        if lat is None or lon is None:
-            print(f"   [WARNING] No se encontro la zona '{zona}' del tecnico {t['nombre']}. Asignando punto central.")
+        
+        if zona_normalizada in diccionario_comunas:
+            lat, lon = diccionario_comunas[zona_normalizada]
+            print(f"      - Tecnico {t['nombre']}: Parte de {zona_original} ({lat}, {lon})")
+        else:
+            print(f"      - [WARNING] Tecnico {t['nombre']}: Zona '{zona_original}' no hallada. Asignando Santiago Centro.")
             lat, lon = -33.4489, -70.6693 # Fallback Santiago Centro
             
         coords_nodos.append((lon, lat))
-        print(f"      - Tecnico {t['nombre']}: Parte de {zona} ({lat}, {lon})")
 
     if USAR_GEOCODING:
-        print(f"\n   [PROCESS] Geocodificando {len(ordenes)} OTs...")
+        print(f"\n   [PROCESS] Geocodificando {len(ordenes)} OTs (usando API Nominatim)...")
         asegurar_coordenadas_ordenes(ordenes)
 
     for ot in ordenes:
@@ -193,7 +224,7 @@ def preparar_modelo_datos(tecnicos, ordenes):
     data['ends'] = list(range(V))
     num_nodos = len(coords_nodos)
 
-    print(f"   Total de vehiculos: {V}")
+    print(f"\n   Total de vehiculos: {V}")
     print(f"   Total de nodos: {num_nodos} ({V} salidas de tecnicos + {len(ordenes)} OTs)")
 
     if USAR_OSRM and num_nodos <= 100:
@@ -279,11 +310,6 @@ def diagnosticar_orden_pendiente(ot, nodo_real, data, tecnicos):
 # =============================================================================
 def resolver_rutas(data, tecnicos):
     print("\n3. Ejecutando motor de optimizacion OR-Tools...")
-    print(f"   [CONFIGURACION]")
-    print(f"      - Vehiculos: {data['num_vehicles']}")
-    print(f"      - Nodos Totales: {len(data['distance_matrix'])}")
-    print(f"      - Estrategia: PATH_CHEAPEST_ARC + GUIDED_LOCAL_SEARCH")
-    print(f"      - Tiempo limite: 5 segundos")
     
     manager = pywrapcp.RoutingIndexManager(
         len(data['distance_matrix']), 
@@ -301,7 +327,6 @@ def resolver_rutas(data, tecnicos):
             
             tecnico = data['tecnicos_info'][vehicle_id]
             
-            # Restriccion: Si es un viaje entre dos OTs (nodos >= V) y el tecnico es interno
             if from_node >= V and to_node >= V:
                 if tecnico.get('tipo') == 'interno':
                     sector_from = data['orden_sectores'][from_node - V]
@@ -332,7 +357,6 @@ def resolver_rutas(data, tecnicos):
     )
     time_dimension = routing.GetDimensionOrDie(time_dimension_name)
 
-    # Restricciones Duras
     for node_idx, time_window in enumerate(data['time_windows']):
         if node_idx in data['starts'] or node_idx in data['ends']:
             continue
